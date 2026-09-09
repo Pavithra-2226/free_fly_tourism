@@ -388,6 +388,9 @@ async def _resolve_offer_for_confirmation(
     """
     Decide Early Bird vs Regular pricing
     for an enquiry being confirmed now.
+
+    Early Bird capacity is based on the number of
+    CONFIRMED MEMBERS/TRAVELLERS, not booking documents.
     """
 
     destination = (
@@ -402,19 +405,70 @@ async def _resolve_offer_for_confirmation(
     if datetime.now(timezone.utc) >= _OFFER_DEADLINE:
         return "Regular", REGULAR_PRICE
 
-    # Count confirmed Early Bird bookings
-    confirmed_early_bird_count = await collection.count_documents(
+    # --------------------------------------------------------
+    # COUNT CONFIRMED EARLY BIRD MEMBERS
+    # --------------------------------------------------------
+    #
+    # We sum the travellers field instead of counting
+    # booking documents.
+    #
+
+    pipeline = [
         {
-            "status": EnquiryStatus.CONFIRMED.value,
-            "offer_type": "Early Bird",
-        }
+            "$match": {
+                "status": EnquiryStatus.CONFIRMED.value,
+                "offer_type": "Early Bird",
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "booked": {
+                    "$sum": {
+                        "$ifNull": ["$travellers", 0]
+                    }
+                },
+            }
+        },
+    ]
+
+    result = await collection.aggregate(
+        pipeline
+    ).to_list(length=1)
+
+    confirmed_early_bird_members = (
+        int(result[0]["booked"])
+        if result
+        else 0
     )
 
-    # Early Bird slots still available
-    if confirmed_early_bird_count < EARLY_BIRD_SEAT_LIMIT:
+    # Number of members in the booking being confirmed
+    current_booking_members = int(
+        existing.get("travellers") or 0
+    )
+
+    # --------------------------------------------------------
+    # CHECK WHETHER THE COMPLETE BOOKING FITS
+    # --------------------------------------------------------
+    #
+    # Example:
+    #
+    # Existing Early Bird members = 6
+    # New booking members = 1
+    # 6 + 1 = 7 -> Early Bird
+    #
+    # Existing Early Bird members = 6
+    # New booking members = 2
+    # 6 + 2 = 8 -> Regular
+    #
+    if (
+        confirmed_early_bird_members
+        + current_booking_members
+        <= EARLY_BIRD_SEAT_LIMIT
+    ):
         return "Early Bird", EARLY_BIRD_PRICE
 
-    # All Early Bird slots used
+    # Not enough Early Bird capacity for this booking.
     return "Regular", REGULAR_PRICE
 
 
@@ -425,12 +479,41 @@ async def _resolve_offer_for_confirmation(
 async def _get_early_bird_summary(
     collection,
 ) -> EarlyBirdSummary:
+    """
+    Calculate Early Bird availability using
+    CONFIRMED MEMBERS/TRAVELLERS.
 
-    booked = await collection.count_documents(
+    Pending, Contacted and other non-confirmed enquiries
+    do not consume Early Bird capacity.
+    """
+
+    pipeline = [
         {
-            "status": EnquiryStatus.CONFIRMED.value,
-            "offer_type": "Early Bird",
-        }
+            "$match": {
+                "status": EnquiryStatus.CONFIRMED.value,
+                "offer_type": "Early Bird",
+            }
+        },
+        {
+            "$group": {
+                "_id": None,
+                "booked": {
+                    "$sum": {
+                        "$ifNull": ["$travellers", 0]
+                    }
+                },
+            }
+        },
+    ]
+
+    result = await collection.aggregate(
+        pipeline
+    ).to_list(length=1)
+
+    booked = (
+        int(result[0]["booked"])
+        if result
+        else 0
     )
 
     remaining = max(

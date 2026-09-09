@@ -20,7 +20,7 @@ export const OFFER = {
   duration: "2 Days / 1 Night",
   regularPrice: 2999,
   earlyBirdPrice: 2699,
-  totalSeats: 15,
+  totalSeats: 7,
   offerEndsAt: "2026-09-10T23:59:59+05:30",
 };
 
